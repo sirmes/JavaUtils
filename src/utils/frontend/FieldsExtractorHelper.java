@@ -8,8 +8,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.commons.lang.StringUtils;
+
 public class FieldsExtractorHelper {
 
+	private static final String PUBLIC_PREFIX = "public ";
 	private static final String GET = "get";
 	private static final String IS = "is";
 	private static final String FIELDS = "fields";
@@ -48,10 +51,11 @@ public class FieldsExtractorHelper {
 				if (!Modifier.isStatic(m.getModifiers()) && m.getParameterTypes().length == 0
 						&& m.getReturnType() != null && Modifier.isPublic(m.getModifiers())) {
 					String name = m.getName();
+					String value = m.toGenericString().toString().replace(PUBLIC_PREFIX, StringUtils.EMPTY);
 					if (name.startsWith(IS))
-						baseMap.put(toProperty(IS.length(), name), m.getReturnType().toString());
+						baseMap.put(toProperty(IS.length(), name), value);
 					else if (name.startsWith(GET))
-						baseMap.put(toProperty(GET.length(), name), m.getReturnType().toString());
+						baseMap.put(toProperty(GET.length(), name), value);
 				}
 			}
 
