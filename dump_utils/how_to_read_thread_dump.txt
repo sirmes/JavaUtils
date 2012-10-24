@@ -1,0 +1,82 @@
+A good four part explanation of how to read thread dumps can be found at: http://allthingsmdw.blogspot.com/2012/02/analyzing-thread-dumps-in-middleware.html.
+
+One-line Linux command that will often isolate the issue, in the 80% situations:
+
+cat tdump-file | grep 'com.___. | sort | uniq -c | sort -r -n | head –20
+
+An Example
+
+[SaksProd log]$ cat tdump.1209240750.SD1PZP05LX.website.1.out | grep 'com.___. | sort | uniq -c | sort -r -n | head –20
+
+    321     at com.___.checkout.BaseSaksBusinessAction.execute(BaseSaksBusinessAction.java:35)
+    319     at com.___.fedex.action.FedexService.getDeliveryDate(FedexService.java:58)
+    319     at com.___.fedex.action.FedExDeliveryDateCalculator.getRateReplyFromFedex(FedExDeliveryDateCalculator.java:182)
+    319     at com.___.fedex.action.FedExDeliveryDateCalculator.getFedexInfoFor(FedExDeliveryDateCalculator.java:62)
+    319     at com.___.checkout.ui.adaptor.ShippingMethods.getFedexDeliveryDate(ShippingMethods.java:209)
+    319     at com.___.checkout.ui.adaptor.ShippingMethods.getEstDeliveryDate(ShippingMethods.java:171)
+    203     at com.___.checkout.ui.adaptor.ShippingMethods.setShippingMethodAdaptersForCartOnly(ShippingMethods.java:277)
+    203     at com.___.checkout.ui.action.ProcessSaksBagJson.updateZipCodeAndShippingMethodOnSaksCart(ProcessSaksBagJson.java:131)
+    203     at com.___.checkout.ui.action.ProcessSaksBagJson.execute(ProcessSaksBagJson.java:59)
+    203     at com.___.checkout.domain.SaksCart.resetShippingMethodAdaptorsForZip(SaksCart.java:317)
+    116     at com.___.checkout.ui.adaptor.ShippingMethods.setShippingMethodAdaptersForCartItem(ShippingMethods.java:331)
+    116     at com.___.checkout.domain.SaksCartItem.resetShippingMethodAdaptersOnCartItem(SaksCartItem.java:917)
+    108     at com.___.checkout.domain.SaksCart.updateDefaultShippingAddress(SaksCart.java:567)
+    108     at com.___.checkout.domain.SaksCartItem.updateShippingAddress(SaksCartItem.java:1230)
+     84     at com.___.checkout.ProcessGetUserInfoAction.execute(ProcessGetUserInfoAction.java:137)
+     27     at com.___.api.web.WebMethod$1.invoke(WebMethod.java:35)
+     27     at com.___.api.web.HttpRequestHandler.doGet(HttpRequestHandler.java:63)
+     27     at com.___.api.web.Dispatcher.dispatch(Dispatcher.java:73)
+     27     at com.___.api.web.adaptors.GenericAdaptor.requestURL(GenericAdaptor.java:92)
+     27     at com.___.api.web.adaptors.GenericAdaptor.getJSON(GenericAdaptor.java:142)
+
+What does this output mean?
+
+Local Knowledge:
+Weblogic executes user requests in execute threads that belong to a pool called default 
+Our website appservers are configured with a pool of 100 worker threads 
+Our scripts generate four thread dumps in series, which means one tdump file will contain 4x100 = 400 Execute threads
+
+If you start at the top of the output from the command, you should go down looking for the first business specific line of code. 
+In this case it’s the second line, com.___.fedex.action.FedexService.getDeliveryDate(FedexService.java:58). 
+The number 319 to the left,  is the count of worker threads that were executing this line of code when we took thread dump.
+
+We can see that 319/400 = 80% of our worker threads were executing this line of code, which is our smoking gun.
+
+If we look further we’d see that another 10% of threads are waiting to acquire (different) locks for and another 8% are blocked on IO in com.___.api.adaptors.ProductAdaptor.getByProductCode().
+
+If we opened the tdump file we’d see worker thread’s whose stack looks like this:
+
+"ExecuteThread: '95' for queue: 'default'" daemon prio=5 tid=0x0000080021fffa00 nid=0x1374a JVM locked by VM at safepoint, polling bits: safep
+        at java.util.HashMap.get_unlocked(HashMap.java:399)
+        at java.util.HashMap.get(HashMap.java:389)
+        at org.apache.axis.description.TypeDesc.getFieldNameForElement(TypeDesc.java:313)
+        at org.apache.axis.encoding.ser.BeanDeserializer.onStartChild(BeanDeserializer.java:197)
+        at org.apache.axis.encoding.DeserializationContext.startElement(DeserializationContext.java:1035)
+        at org.apache.axis.message.SAX2EventRecorder.replay(SAX2EventRecorder.java:165)
+        at org.apache.axis.message.MessageElement.publishToHandler(MessageElement.java:1141)
+        at org.apache.axis.message.RPCElement.deserialize(RPCElement.java:236)
+        at org.apache.axis.message.RPCElement.getParams(RPCElement.java:384)
+        at org.apache.axis.client.Call.invoke(Call.java:2467)
+        at org.apache.axis.client.Call.invoke(Call.java:2366)
+        at org.apache.axis.client.Call.invoke(Call.java:1812)
+        at com.fedex.rate.stub.RateServiceSoapBindingStub.getRates(RateServiceSoapBindingStub.java:1817)
+        at com.___.fedex.action.FedExDeliveryDateCalculator.getRateReplyFromFedex(FedExDeliveryDateCalculator.java:182)
+        at com.___.fedex.action.FedExDeliveryDateCalculator.getFedexInfoFor(FedExDeliveryDateCalculator.java:62)
+        at com.___.fedex.action.FedexService.getDeliveryDate(FedexService.java:58)
+        at com.___.checkout.ui.adaptor.ShippingMethods.getFedexDeliveryDate(ShippingMethods.java:209)
+        at com.___.checkout.ui.adaptor.ShippingMethods.getEstDeliveryDate(ShippingMethods.java:171)
+        at com.___.checkout.ui.adaptor.ShippingMethods.setShippingMethodAdaptersForCartOnly(ShippingMethods.java:277)
+        at com.___.checkout.domain.SaksCart.resetShippingMethodAdaptorsForZip(SaksCart.java:317)
+        at com.___.checkout.ui.action.ProcessSaksBagJson.updateZipCodeAndShippingMethodOnSaksCart(ProcessSaksBagJson.java:131)
+        at com.___.checkout.ui.action.ProcessSaksBagJson.execute(ProcessSaksBagJson.java:59)
+        ....
+        at weblogic.kernel.ExecuteThread.execute(ExecuteThread.java:145)
+        at weblogic.kernel.ExecuteThread.run(ExecuteThread.java:117)
+
+In this example it’s a known issue that was triggered, a concurrency bug within a third-party jar that FedexService uses.
+
+Thread Dump Tools
+ 
+Threadlogic:    Rules based analysis        http://java.net/projects/threadlogic/ 
+Samurai:          Graphical visualization   http://yusuke.homeip.net/samurai/en/index.html 
+
